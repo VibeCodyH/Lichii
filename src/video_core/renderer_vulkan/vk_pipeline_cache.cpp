@@ -826,11 +826,11 @@ bool PreloadAllPipelines() {
     return all;
 }
 
-// Graphics pipelines a Switch 2 title keeps before any is evicted: an eighth of system RAM at
-// ~0.45 MB of driver memory each (16 GB: ~4,600), and never fewer than the boot limit above.
+// Graphics pipelines a Switch 2 title keeps before any is evicted: a sixteenth of system RAM at
+// ~0.45 MB of driver memory each (32 GB: ~4,600), and never fewer than the boot limit above.
 size_t Switch2PipelineBudget() {
     static const size_t budget = std::max<size_t>(
-        MaxPipelinesWithoutUsedList, Common::GetMemInfo().TotalPhysicalMemory / 8 / (450 * 1024));
+        MaxPipelinesWithoutUsedList, Common::GetMemInfo().TotalPhysicalMemory / 16 / (450 * 1024));
     return budget;
 }
 } // Anonymous namespace
