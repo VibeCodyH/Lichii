@@ -1051,7 +1051,7 @@ function(AddCIPackage)
             "${CMAKE_CURRENT_BINARY_DIR}/.cpmutil_${ARTIFACT}_sha512sum")
 
         # smooth-oot fork: GitHub release downloads sometimes return 504; retry a few times.
-        foreach(sha512sum_attempt RANGE 1 6)
+        foreach(sha512sum_attempt RANGE 1 3)
             file(DOWNLOAD "${sha512sum_url}" "${sha512sum_file}"
                 STATUS sha512sum_status)
             list(GET sha512sum_status 0 sha512sum_error)
@@ -1060,8 +1060,43 @@ function(AddCIPackage)
             endif()
             message(WARNING "[CPMUtil] sha512sum download attempt ${sha512sum_attempt} "
                 "for ${ARTIFACT_NAME} failed: ${sha512sum_status}")
-            execute_process(COMMAND ${CMAKE_COMMAND} -E sleep 20)
+            execute_process(COMMAND ${CMAKE_COMMAND} -E sleep 10)
         endforeach()
+
+        # smooth-oot fork: when the github.com release link keeps failing, fetch the same asset
+        # through the REST API (a different serving path).
+        if(sha512sum_error AND "${ARTIFACT_GIT_HOST}" STREQUAL "github.com")
+            set(api_headers HTTPHEADER "Accept: application/vnd.github+json")
+            if(DEFINED ENV{GITHUB_TOKEN})
+                list(APPEND api_headers HTTPHEADER "Authorization: Bearer $ENV{GITHUB_TOKEN}")
+            endif()
+            set(release_json "${CMAKE_CURRENT_BINARY_DIR}/.cpmutil_${ARTIFACT}_release.json")
+            file(DOWNLOAD
+                "https://api.github.com/repos/${ARTIFACT_REPO}/releases/tags/${ARTIFACT_VERSION}"
+                "${release_json}" STATUS release_status ${api_headers})
+            list(GET release_status 0 release_error)
+            if(NOT release_error)
+                file(READ "${release_json}" release_text)
+                string(JSON asset_count LENGTH "${release_text}" assets)
+                math(EXPR asset_last "${asset_count} - 1")
+                foreach(asset_index RANGE 0 ${asset_last})
+                    string(JSON asset_name GET "${release_text}" assets ${asset_index} name)
+                    if("${asset_name}" STREQUAL "${ARTIFACT}.sha512sum")
+                        string(JSON asset_url GET "${release_text}" assets ${asset_index} url)
+                        set(asset_headers HTTPHEADER "Accept: application/octet-stream")
+                        if(DEFINED ENV{GITHUB_TOKEN})
+                            list(APPEND asset_headers HTTPHEADER
+                                "Authorization: Bearer $ENV{GITHUB_TOKEN}")
+                        endif()
+                        file(DOWNLOAD "${asset_url}" "${sha512sum_file}"
+                            STATUS sha512sum_status ${asset_headers})
+                        list(GET sha512sum_status 0 sha512sum_error)
+                        break()
+                    endif()
+                endforeach()
+            endif()
+            file(REMOVE "${release_json}")
+        endif()
 
         # The checksum only verifies a download. When GitHub can't serve it (an outage) but this
         # exact version is already unpacked in the source cache, nothing is downloaded: go on

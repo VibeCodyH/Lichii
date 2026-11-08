@@ -246,6 +246,8 @@ jobs:
       - name: Configure Linux
         if: startsWith(matrix.platform, 'linux')
         shell: bash
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           flags=(
