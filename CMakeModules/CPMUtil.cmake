@@ -1050,9 +1050,18 @@ function(AddCIPackage)
         set(sha512sum_file
             "${CMAKE_CURRENT_BINARY_DIR}/.cpmutil_${ARTIFACT}_sha512sum")
 
-        file(DOWNLOAD "${sha512sum_url}" "${sha512sum_file}"
-            STATUS sha512sum_status)
-        list(GET sha512sum_status 0 sha512sum_error)
+        # smooth-oot fork: GitHub release downloads sometimes return 504; retry a few times.
+        foreach(sha512sum_attempt RANGE 1 6)
+            file(DOWNLOAD "${sha512sum_url}" "${sha512sum_file}"
+                STATUS sha512sum_status)
+            list(GET sha512sum_status 0 sha512sum_error)
+            if(NOT sha512sum_error)
+                break()
+            endif()
+            message(WARNING "[CPMUtil] sha512sum download attempt ${sha512sum_attempt} "
+                "for ${ARTIFACT_NAME} failed: ${sha512sum_status}")
+            execute_process(COMMAND ${CMAKE_COMMAND} -E sleep 20)
+        endforeach()
 
         if(sha512sum_error)
             message(FATAL_ERROR "[CPMUtil] Failed to download sha512sum "
