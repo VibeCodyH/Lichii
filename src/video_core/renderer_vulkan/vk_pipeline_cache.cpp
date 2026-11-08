@@ -1403,6 +1403,24 @@ void ReportUnsupportedMeshPipeline(const GraphicsPipelineCacheKey& key, const Pr
 }
 } // Anonymous namespace
 
+namespace {
+/// Graphics pipelines translated on translation workers since the last 10 s report (GPU thread).
+struct {
+    u32 queued{};
+    size_t copied_bytes{}; ///< Constant buffer contents copied to detach their environments.
+    u32 adopted{};
+    u32 timed_out{}; ///< Draws skipped because the translation outlasted the wait budget.
+    u32 on_gpu_thread{}; ///< Translations that needed more than the detached environments hold.
+    // smooth-oot diagnostics: why new pipelines were not translated on workers.
+    u32 gate_sync{};        ///< No translation threads, or the key is marked synchronous.
+    u32 gate_not_native{};  ///< The draw is not a native (Switch 2) draw.
+    u32 gate_wait_mode{};   ///< native_async_draws is Wait.
+    u32 gate_no_discard{};  ///< The draw may not be skipped (legacy heuristic).
+    u32 gate_not_lowered{}; ///< A stage has no lowered native code.
+    u32 detach_failed{};    ///< The environments could not be detached.
+} async_translations;
+} // Anonymous namespace
+
 GraphicsPipeline* PipelineCache::CurrentGraphicsPipelineSlowPath() {
     if (num_translated.load(std::memory_order_acquire) != 0) {
         AdoptTranslatedGraphicsPipelines();
@@ -1429,6 +1447,8 @@ GraphicsPipeline* PipelineCache::CurrentGraphicsPipelineSlowPath() {
                         return nullptr;
                     }
                     it = graphics_cache.find(graphics_key);
+                } else if (!new_pipeline) {
+                    ++async_translations.detach_failed;
                 }
             }
         }
@@ -2144,14 +2164,6 @@ std::optional<PipelineCache::GraphicsShaders> PipelineCache::BuildGraphicsShader
 }
 
 namespace {
-/// Graphics pipelines translated on translation workers since the last 10 s report (GPU thread).
-struct {
-    u32 queued{};
-    size_t copied_bytes{}; ///< Constant buffer contents copied to detach their environments.
-    u32 adopted{};
-    u32 timed_out{}; ///< Draws skipped because the translation outlasted the wait budget.
-    u32 on_gpu_thread{}; ///< Translations that needed more than the detached environments hold.
-} async_translations;
 
 // Pipelines built on the GPU thread at run time (shader translation, and the SPIR-V unless a worker
 // emits it; the driver compile is on workers): the first 400 over 2 ms and every one over 100 ms
@@ -2184,11 +2196,15 @@ void ReportRuntimePipeline(const char* kind, std::chrono::steady_clock::time_poi
                  "({:.1f} ms of it graphics SPIR-V), {:.1f} ms graphics SPIR-V on workers, "
                  "{:.1f} ms of draws held for unbuilt pipelines; graphics translations on "
                  "workers: {} queued ({} KiB of state copied), {} adopted, {} past the wait "
-                 "budget, {} left to the GPU thread",
+                 "budget, {} left to the GPU thread; not async because: sync {}, not native {}, "
+                 "wait mode {}, no discard {}, not lowered {}, detach failed {}",
                  count, ms(total), ms(take(runtime_spirv_ns[0])), ms(take(runtime_spirv_ns[1])),
                  ms(GraphicsPipeline::TakeHoldTime()), async_translations.queued,
                  async_translations.copied_bytes / 1024, async_translations.adopted,
-                 async_translations.timed_out, async_translations.on_gpu_thread);
+                 async_translations.timed_out, async_translations.on_gpu_thread,
+                 async_translations.gate_sync, async_translations.gate_not_native,
+                 async_translations.gate_wait_mode, async_translations.gate_no_discard,
+                 async_translations.gate_not_lowered, async_translations.detach_failed);
         async_translations = {};
         total = {};
         count = 0;
@@ -2267,15 +2283,26 @@ void PipelineCache::SerializeGraphicsPipeline(const GraphicsPipelineCacheKey& ke
 // adopts the pipeline. Compute pipelines stay synchronous: a skipped dispatch loses its outputs.
 bool PipelineCache::CanTranslateAsynchronously() const {
     if (num_translation_threads == 0 || synchronous_graphics.contains(graphics_key)) {
+        ++async_translations.gate_sync;
         return false;
     }
     const PendingDrawPolicy policy{CurrentPendingDrawPolicy()};
-    if (!policy.native || policy.mode == NativePendingMode::Wait || !policy.can_discard) {
+    if (!policy.native) {
+        ++async_translations.gate_not_native;
+        return false;
+    }
+    if (policy.mode == NativePendingMode::Wait) {
+        ++async_translations.gate_wait_mode;
+        return false;
+    }
+    if (!policy.can_discard) {
+        ++async_translations.gate_no_discard;
         return false;
     }
     for (size_t index = 0; index < Maxwell::MaxShaderProgram; ++index) {
         if (graphics_key.unique_hashes[index] != 0 &&
             (!shader_infos[index] || !shader_infos[index]->lowered_native)) {
+            ++async_translations.gate_not_lowered;
             return false;
         }
     }
