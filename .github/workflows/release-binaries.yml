@@ -413,6 +413,8 @@ jobs:
       - name: Package Linux AppImage
         if: startsWith(matrix.platform, 'linux')
         shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           test -x build/release/bin/lichii
@@ -420,10 +422,18 @@ jobs:
           tools="$RUNNER_TEMP/linuxdeploy"
           mkdir -p "$tools"
           arch=$(uname -m)   # aarch64 or x86_64
-          curl -fsSL --retry 6 --retry-delay 20 --retry-all-errors -o "$tools/linuxdeploy-$arch.AppImage" \
-          https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-$arch.AppImage
-          curl -fsSL --retry 6 --retry-delay 20 --retry-all-errors -o "$tools/linuxdeploy-plugin-qt-$arch.AppImage" \
-          https://github.com/linuxdeploy/linuxdeploy-plugin-qt/releases/download/continuous/linuxdeploy-plugin-qt-$arch.AppImage
+          # smooth-oot fork: github.com release links sometimes return 504 for hours; fetch the
+          # assets through the REST API instead, which serves them from a different path.
+          fetch_tool() {
+            local repo=$1 name=$2 id
+            id=$(gh api "repos/linuxdeploy/$repo/releases/tags/continuous" \
+              --jq ".assets[] | select(.name == \"$name\") | .id")
+            curl -fsSL --retry 6 --retry-delay 20 --retry-all-errors \
+              -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/octet-stream" \
+              -o "$tools/$name" "https://api.github.com/repos/linuxdeploy/$repo/releases/assets/$id"
+          }
+          fetch_tool linuxdeploy "linuxdeploy-$arch.AppImage"
+          fetch_tool linuxdeploy-plugin-qt "linuxdeploy-plugin-qt-$arch.AppImage"
           chmod +x "$tools"/*.AppImage
           # The desktop file names its icon io.github.zortos293.lichii.
           icon="$RUNNER_TEMP/io.github.zortos293.lichii.png"
