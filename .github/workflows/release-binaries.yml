@@ -372,6 +372,8 @@ jobs:
           set -euo pipefail
           test -x build/release/bin/lichii
           test -x build/release/bin/eden-cli
+          # Keep the symbol table for profiling the stripped binary (same build ID).
+          objcopy --only-keep-debug build/release/bin/lichii "lichii-${GITHUB_SHA}.debug"
           strip build/release/bin/lichii build/release/bin/eden-cli
           tar -czf "lichii-${GITHUB_SHA}-${{ matrix.platform }}.tar.gz" \
             -C build/release/bin lichii eden-cli nx2_switches.txt
@@ -520,6 +522,7 @@ jobs:
           path: |
             lichii-${{ github.sha }}-${{ matrix.platform }}.tar.gz
             lichii-${{ github.sha }}-${{ matrix.platform }}.AppImage
+            lichii-${{ github.sha }}.debug
           if-no-files-found: error
           compression-level: 0
           retention-days: 7
