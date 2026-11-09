@@ -5,6 +5,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <bit>
+#include <cstdlib>
 #include <tuple>
 #include <utility>
 
@@ -487,12 +488,33 @@ void EmitSetPatch(EmitContext& ctx, IR::Patch patch, Id value) {
     ctx.OpStore(pointer, value);
 }
 
+namespace {
+// Ocarina of Time on Switch 2: some lighting draws write NaN (from a bad probe/light buffer, see
+// zortos293/Lichii#849 and #867), and bloom spreads it into white glows over the whole screen. A
+// NaN written to a float color target becomes 0 instead, so the glow becomes a small dark spot.
+// EDEN_NX2_NAN_GUARD=0 writes colors unchanged.
+bool NanGuardEnabled() {
+    static const bool enabled = [] {
+        const char* value = std::getenv("EDEN_NX2_NAN_GUARD");
+        return value == nullptr || value[0] != '0';
+    }();
+    return enabled;
+}
+
+Id GuardNan(EmitContext& ctx, Id value) {
+    if (!NanGuardEnabled()) {
+        return value;
+    }
+    return ctx.OpSelect(ctx.F32[1], ctx.OpIsNan(ctx.U1, value), ctx.Const(0.0f), value);
+}
+} // Anonymous namespace
+
 void EmitSetFragColor(EmitContext& ctx, u32 index, u32 component, Id value) {
     const Id component_id{ctx.Const(component)};
     const AttributeType type{ctx.runtime_info.color_output_types[index]};
     if (type == AttributeType::Float) {
         const Id pointer{ctx.OpAccessChain(ctx.output_f32, ctx.frag_color.at(index), component_id)};
-        ctx.OpStore(pointer, value);
+        ctx.OpStore(pointer, GuardNan(ctx, value));
     } else if (type == AttributeType::UnsignedInt) {
         const Id pointer{ctx.OpAccessChain(ctx.output_u32, ctx.frag_color.at(index), component_id)};
         ctx.OpStore(pointer, ctx.OpBitcast(ctx.U32[1], value));
